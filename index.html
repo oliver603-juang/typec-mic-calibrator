@@ -168,6 +168,7 @@ footer{padding:20px;text-align:center;color:var(--mut);font-size:12px}
       <input type="text" id="inRsp" placeholder="目前阻值" inputmode="decimal">
       <button class="b" id="btnSp" disabled>播放並比對</button>
     </div>
+    <div class="note warn" id="spNeed">請先在「① 裝置」連接麥克風，並在上方選擇或載入測試語音。</div>
     <div class="bar"><i id="spBar"></i></div>
     <div id="spResult"></div>
     <canvas id="cvSpWave" height="140" style="margin-top:8px"></canvas>
@@ -314,7 +315,7 @@ function disconnectMic(){
   cancelAnimationFrame(liveRaf);
   stopOsc();
   if(micStream){ micStream.getTracks().forEach(t=>t.stop()); micStream=null; }
-  micSrc=null; analyser=null;
+  micSrc=null; analyser=null; updateSpBtn();
   $('#pillMic').textContent='麥克風 未連線'; $('#pillMic').classList.remove('on');
   $('#btnMicOff').disabled=true; $('#btnRec').disabled=true; $('#btnFr').disabled=true; $('#btnSp').disabled=true;
 }
@@ -508,7 +509,7 @@ async function loadPreset(p){
       await idbPut(p.id, ab);
     }
     await setClip(p.name, ab.slice(0)); st.textContent='✓';
-  }catch(e){ console.error(e); st.textContent='載入失敗'; $('#clipStat').textContent='預設音訊無法載入（可能是 CORS 限制）。請用瀏覽器開啟該網址下載後，改用「自選檔案」。'; }
+  }catch(e){ console.error(e); st.textContent='載入失敗'; document.querySelectorAll('input[name=preset]').forEach(i=>i.checked=false); $('#clipStat').textContent='預設音訊無法由網路載入（該主機未開放 CORS）。請用瀏覽器開啟該網址下載 mp3，再用「自選檔案」選取；檔名保留原 hash 即可自動綁定到此預設項。'; }
 }
 async function setClip(name, ab){
   await ensureCtx();
@@ -517,13 +518,27 @@ async function setClip(name, ab){
   $('#clipStat').textContent=`${name}・${buf.duration.toFixed(2)} 秒・${buf.sampleRate} Hz`;
   updateSpBtn();
 }
-function updateSpBtn(){ $('#btnSp').disabled = !(clip && analyser); }
+function updateSpBtn(){
+  const ok = !!(clip && analyser); $('#btnSp').disabled = !ok;
+  const h=$('#spNeed');
+  if(ok){ h.textContent=''; }
+  else if(!analyser && !clip) h.textContent='請先在「① 裝置」連接麥克風，並在上方選擇或載入測試語音。';
+  else if(!analyser) h.textContent='語音已就緒。請先到「① 裝置」點「連接麥克風」，回來後即可播放並比對。';
+  else h.textContent='麥克風已連線。請在上方選擇或載入一段測試語音。';
+}
 $('#inFile').addEventListener('change', async e=>{
   const f=e.target.files[0]; if(!f) return;
   $('#clipStat').textContent='解碼中…';
-  try{ const ab=await f.arrayBuffer(); await idbPut('user:'+f.name, ab.slice(0)); await setClip(f.name, ab); document.querySelectorAll('input[name=preset]').forEach(i=>i.checked=false); }
+  try{
+    const ab=await f.arrayBuffer();
+    // 檔名若含預設句的 hash，直接綁定到該預設項，之後點預設就用本機檔
+    const hit = PRESETS.find(p=>f.name.toLowerCase().includes(p.url.split('/').pop().toLowerCase()));
+    if(hit){ await idbPut(hit.id, ab.slice(0)); $('#pst-'+hit.id).textContent='✓ 本機'; document.querySelectorAll('input[name=preset]').forEach(i=>i.checked=(i.value===hit.id)); await setClip(hit.name, ab); }
+    else { await idbPut('user:'+f.name, ab.slice(0)); await setClip(f.name, ab); document.querySelectorAll('input[name=preset]').forEach(i=>i.checked=false); }
+  }
   catch(err){ $('#clipStat').textContent='無法解碼此檔案：'+err.message; }
 });
+async function markCachedPresets(){ for(const p of PRESETS){ try{ if(await idbGet(p.id)) $('#pst-'+p.id).textContent='✓ 本機'; }catch(e){} } }
 
 async function doSpeech(){
   const r=parseR($('#inRsp').value||$('#inR').value); if(!isFinite(r)){alert('請輸入目前阻值');return;}
@@ -639,7 +654,7 @@ $('#btnSp').onclick=doSpeech;
 $('#btnCsv').onclick=exportCsv;
 $('#btnClear').onclick=()=>{ if(confirm('確定清除所有紀錄？')){records=[];saveRecords();renderAll();} };
 $('#inR').addEventListener('input',e=>{$('#inRfr').value=e.target.value;$('#inRsp').value=e.target.value;});
-renderPresets(); renderAll();
+renderPresets(); renderAll(); updateSpBtn(); markCachedPresets();
 if('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(()=>{});
 window.__tcmic={fft,findLag,thdFromSpectrum,analyzeFrame,compareClips,parseR,predict,records:()=>records,setRecords:r=>{records=r;}};
 </script>
