@@ -116,7 +116,7 @@ footer{padding:20px;text-align:center;color:var(--mut);font-size:12px}
     <h2>記錄目前阻值</h2>
     <div class="row">
       <input type="text" id="inR" placeholder="例 3.5k / 3500" inputmode="decimal">
-      <span class="hint">Ω（接受 3.5k、3500、3.5）</span>
+      <span class="hint">Ω（3.5k、3500、3.5 皆為 3.5kΩ；小於 20 的數字視為 kΩ，要輸入 10Ω 請寫 10r）</span>
     </div>
     <div class="row">
       <button class="b" id="btnRec" disabled>記錄（取樣 1 秒）</button>
@@ -209,11 +209,13 @@ const $ = s => document.querySelector(s);
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const db20 = x => 20*Math.log10(Math.max(x,1e-9));
 function parseR(s){
-  s = (s||'').trim().toLowerCase().replace(/ω|ohm|Ω/g,'').replace(/\s+/g,'');
+  s = (s||'').trim().toLowerCase().replace(/\s+/g,'');
   if(!s) return NaN;
-  let m = s.match(/^([\d.]+)(k)?$/); if(!m) return NaN;
+  let m = s.match(/^([\d.]+)(k|r|ω|Ω|ohm)?$/); if(!m) return NaN;
   let v = parseFloat(m[1]); if(!isFinite(v)) return NaN;
-  if(m[2]) v*=1000; else if(v<20) v*=1000;   // 3.5 -> 3.5k
+  if(m[2]==='k') v*=1000;
+  else if(m[2]) { /* r / Ω：原樣 */ }
+  else if(v<20) v*=1000;   // 3.5 -> 3.5k；要輸入 10Ω 請寫 10r
   return Math.round(v);
 }
 const fmtR = r => r>=1000 ? (r/1000).toFixed(2).replace(/\.?0+$/,'')+'k' : r+'';
@@ -579,6 +581,7 @@ function compareClips(A, B, sr){
   // 最佳增益 g 使 ||a - g b|| 最小
   let ab=0,bb=0,aa=0; for(let i=0;i<n;i++){ab+=a[i]*b[i];bb+=b[i]*b[i];aa+=a[i]*a[i];}
   const g = bb>0? ab/bb : 0;
+  const rho = (aa>0&&bb>0) ? ab/Math.sqrt(aa*bb) : 0;   // 相關係數，判斷是否真的收到迴路訊號
   let err=0; for(let i=0;i<n;i++){const d=a[i]-g*b[i];err+=d*d;}
   const sdr = 10*Math.log10(aa/Math.max(err,1e-12));
   // 回錄電平
@@ -592,14 +595,15 @@ function compareClips(A, B, sr){
   const bw=sr/N; let bands=BANDS.map(([lo,hi])=>{ let ea=0,eb=0; for(let i=Math.floor(lo/bw);i<Math.min(N/2,Math.ceil(hi/bw));i++){ea+=pa[i];eb+=pb[i];} return {lo,hi,d:10*Math.log10((eb+1e-20)/(ea+1e-20))}; });
   const ref=bands[3].d; bands=bands.map(b=>({lo:b.lo,hi:b.hi,d:+(b.d-ref).toFixed(2)}));   // 以 800–1600 Hz 為 0 dB 基準
   const hfBands=bands.filter(b=>b.lo>=4000&&b.hi<=8000); const hf=+(hfBands.reduce((s,b)=>s+b.d,0)/hfBands.length).toFixed(2);
-  return {lag, lagMs:+(lag/sr*1000).toFixed(1), gainDb:+db20(1/Math.max(g,1e-9)).toFixed(2), sdr:+sdr.toFixed(2), peakDb:+peakDb.toFixed(1), rmsDb:+rmsDb.toFixed(1), clips, hf, bands};
+  return {rho:+rho.toFixed(3), lag, lagMs:+(lag/sr*1000).toFixed(1), gainDb:+db20(1/Math.max(g,1e-9)).toFixed(2), sdr:+sdr.toFixed(2), peakDb:+peakDb.toFixed(1), rmsDb:+rmsDb.toFixed(1), clips, hf, bands};
 }
 function renderSpeech(r,res,A,B){
   const box=$('#spResult'); box.innerHTML='';
-  const kv=el('div','kv'); [['SDR',res.sdr+' dB'],['迴路衰減',res.gainDb+' dB'],['4–8 kHz 平均差',(res.hf>0?'+':'')+res.hf+' dB'],['回錄峰值',res.peakDb+' dBFS'],['回錄 RMS',res.rmsDb+' dBFS'],['削波樣本',res.clips],['延遲',res.lagMs+' ms'],['音訊',res.clipName]].forEach(([k,v])=>{kv.appendChild(el('span',null,k));kv.appendChild(el('span',null,String(v)));});
+  const kv=el('div','kv'); [['相關係數',res.rho],['SDR',res.sdr+' dB'],['迴路衰減',res.gainDb+' dB'],['4–8 kHz 平均差',(res.hf>0?'+':'')+res.hf+' dB'],['回錄峰值',res.peakDb+' dBFS'],['回錄 RMS',res.rmsDb+' dBFS'],['削波樣本',res.clips],['延遲',res.lagMs+' ms'],['音訊',res.clipName]].forEach(([k,v])=>{kv.appendChild(el('span',null,k));kv.appendChild(el('span',null,String(v)));});
   box.appendChild(kv);
   let cls='ok', msg=`✓ ${fmtR(r)}Ω 回錄品質良好。`;
-  if(res.clips>0||res.peakDb>-1){cls='bad';msg=`✗ 回錄有削波（${res.clips} 個樣本 / 峰值 ${res.peakDb} dBFS），阻值過低。`;}
+  if(res.rho<0.3){cls='bad';msg=`✗ 未偵測到迴路訊號（相關係數 ${res.rho}，延遲 ${res.lagMs} ms 不可信）。麥克風收到的只是底噪。請到 ② 播放 1kHz 並觀察 ① 的即時 RMS 是否隨訊號開關變化；確認輸入裝置是耳機麥克風、媒體音量已開、迴路接線與共地正確。`;}
+  else if(res.clips>0||res.peakDb>-1){cls='bad';msg=`✗ 回錄有削波（${res.clips} 個樣本 / 峰值 ${res.peakDb} dBFS），阻值過低。`;}
   else if(res.sdr<12){cls='bad';msg=`✗ SDR ${res.sdr} dB 偏低，波形失真明顯。`+(res.hf<-4?'高頻損失是主因，建議調低阻值。':'請檢查迴路接觸與音量是否固定。');}
   else if(res.hf<-6){cls='warn';msg=`⚠ 4–8 kHz 平均衰減 ${res.hf} dB，日文子音可能變糊，建議稍微調低阻值。`;}
   else if(res.sdr<20){cls='warn';msg=`⚠ SDR ${res.sdr} dB 可用，仍有改善空間。`;}
